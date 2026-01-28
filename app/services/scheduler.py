@@ -36,6 +36,7 @@ from app.schemas.clinical import (
     ScheduleRequest,
     ScheduleResponse,
     ScheduledTask,
+    ScoreBreakdown,
 )
 
 
@@ -82,7 +83,8 @@ class ScoredOrder:
     """
     order: Order
     score: float
-    rationale: str
+    summary: str
+    breakdown: ScoreBreakdown
 
 
 def _minutes_until(now: datetime, due_at: datetime) -> float:
@@ -172,16 +174,36 @@ def score_orders(
         # Bigger score means more important.
         score = (acuity_factor * type_factor * urgency) + stat_bonus - prn_penalty
 
-        # The rationale is the explainability piece.
-        # This is exactly what I would want if I was the nurse looking at a schedule:
-        # I want to know why something is being pushed up.
-        rationale = (
-            f"acuity={p.acuity.value}, type={o.type.value}, "
-            f"due_in_min={mins:.1f}, stat={o.is_stat}, prn={o.is_prn}, "
-            f"urgency={urgency:.2f}"
+        # Human readable summary:
+        # This is the part a nurse or teammate should be able to skim without decoding a bunch of key=value pairs.
+        # Example: "procedure for Patient A (acuity: critical, due in ~84m, STAT)"
+        summary = (
+            f"{o.type.value} for {p.display_name} "
+            f"(acuity: {p.acuity.value}, due in ~{mins:.0f}m"
+            f"{', STAT' if o.is_stat else ''}"
+            f"{', PRN' if o.is_prn else ''})"
         )
 
-        scored.append(ScoredOrder(order=o, score=score, rationale=rationale))
+        # Structured breakdown:
+        # This keeps the decision explainable and debuggable.
+        # If a teammate wants to tune weights later, this makes it way easier to see what contributed to the score.
+        breakdown = ScoreBreakdown(
+            acuity=p.acuity.value,
+            order_type=o.type.value,
+            due_in_minutes=round(mins, 1),
+            urgency=round(urgency, 2),
+            is_stat=o.is_stat,
+            is_prn=o.is_prn,
+        )
+
+        scored.append(
+            ScoredOrder(
+                order=o,
+                score=score,
+                summary=summary,
+                breakdown=breakdown,
+            )
+        )
 
     # Sort order:
     # 1) highest score first
@@ -225,9 +247,14 @@ def generate_schedule(req: ScheduleRequest) -> ScheduleResponse:
     shift_start = req.shift.start_at
     shift_end = req.shift.end_at
 
-    # Cursor is our current free time on the schedule.
-    # We start at the later of shift start or current time.
-    cursor = max(shift_start, now)
+   # cursor is "where we are" in the timeline when placing tasks.
+#
+# we want behavior that makes sense for both:
+# - a live, in-progress shift (start at now, because we can't schedule in the past)
+# - a future shift (start at shift_start, because that's what the request asked for)
+#
+# this keeps demos intuitive and keeps real-world behavior reasonable.
+    cursor = shift_start if now < shift_start else now
 
     tasks: list[ScheduledTask] = []
     notes: list[str] = []
@@ -273,14 +300,20 @@ def generate_schedule(req: ScheduleRequest) -> ScheduleResponse:
             )
             break
 
+               # We want the response to be readable without needing to cross-reference IDs,
+        # so we include the patient display name too.
+        patient = patients_by_id.get(o.patient_id)
+
         tasks.append(
             ScheduledTask(
                 order_id=o.id,
                 patient_id=o.patient_id,
+                patient_display_name=patient.display_name if patient else "Unknown patient",
                 starts_at=start,
                 ends_at=end,
                 priority_score=item.score,
-                rationale=item.rationale,
+                summary=item.summary,
+                score_breakdown=item.breakdown,
             )
         )
 

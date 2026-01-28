@@ -57,6 +57,33 @@ class ScheduledTask(BaseModel):
 
 
 class ScheduleResponse(BaseModel):
-    generated_at: datetime
-    tasks: list[ScheduledTask]
-    notes: list[str] = []
+    order_id: str
+    patient_id: str
+    patient_display_name: str
+
+    starts_at: datetime
+    ends_at: datetime
+
+    priority_score: float
+
+    # short sentence meant to be read by a human
+    summary: str
+
+    # structured explanation meant for transparency and debugging
+    score_breakdown: ScoreBreakdown
+    
+class ScoreBreakdown(BaseModel):
+    """
+    Structured explanation of why an order was prioritized.
+
+    This exists so:
+    - humans can understand decisions
+    - teammates can debug scoring logic
+    - future ML models can explain themselves in the same format
+    """
+    acuity: str
+    order_type: str
+    due_in_minutes: float
+    urgency: float
+    is_stat: bool
+    is_prn: bool    
